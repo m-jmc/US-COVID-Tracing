@@ -1,0 +1,1905 @@
+---
+title: "County COVID-19 Tracking"
+author: "Mike"
+date: "05/16/2020"
+output: 
+  html_document:
+    toc: true
+    toc_depth: 2
+    keep_md: TRUE
+---
+
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Introduction
+
+"The New York Times is releasing a series of data files with cumulative counts of coronavirus cases in the United States, at the state and county level, over time. We are compiling this time series data from state and local governments and health departments in an attempt to provide a complete record of the ongoing outbreak.
+
+Since late January, The Times has tracked cases of coronavirus in real time as they were identified after testing. Because of the widespread shortage of testing, however, the data is necessarily limited in the picture it presents of the outbreak. [Kaggle](https://www.kaggle.com/fireballbyedimyrnmom/us-counties-covid-19-dataset). <br>
+
+Here I'll be adapting some of my work from the global and nation wide trending [HERE](https://www.kaggle.com/mcnamamj/covid-19-graphing-and-mapping) to my home state of Wisconsin.
+
+## Change Log
+Update 5/26/20: Data Refresh <br>
+Update 5/16/20: Data Refresh, Growth and Mortality Feature Analysis <br>
+Update 5/06/20: Data Refresh, Label creation and Analysis, County health profile load <br>
+Update 4/17/20: Data Refresh <br>
+Update 4/08/20: Data Refresh <br>
+Update 4/04/20: Data Refresh, Milwaukee County SIR Projections <br>
+Update 4/01/20: Initial Commit. <br>
+
+```{r, echo=FALSE,include=FALSE}
+
+library(tidyverse)
+library(lubridate)
+library(reshape2)
+library(viridis)
+library(ggthemes)
+library(plotly)
+library(maps)
+library(usmap)
+library(leaflet)
+library(rgdal)
+library(deSolve)
+library(gridExtra)
+library(formattable)
+library(caret)
+library(corrplot)
+library(xgboost)
+library(DiagrammeR)
+library(scales)
+
+# Load the Times Dataset ----------------------------------------------------------------------------------DATA LOAD
+
+
+data <- read_csv("us-counties.csv")
+#data <- read_csv("../input/us-counties-covid-19-dataset/us-counties.csv")
+
+
+# Move Data Load to top of script --------------------------------------------------------------------------DATA LOAD STEP
+
+county_profile_data <- read_csv("county_profile_data.csv")
+#county_profile_data <- read_csv("../input/countyprofile/county_profile_data.csv")
+
+
+#Dataset is already a rolling total of cases by county
+# we dont need further aggregration and can grab the current total from the latest date in the dataset
+# specify the latest date value here: ---------------------------------------------------------------------DATE UPDATE
+#latest_date <- list(as.Date('2020-05-14'))
+
+# Using Data from two days ago as the latest date
+latest_date <- list(Sys.Date()-2)
+
+# Subset the most recent counts for wisconsin counties
+wi.recent <- data %>% filter(state == "Wisconsin" & date==latest_date)
+wi.all <- data %>% filter(state == "Wisconsin")
+
+# Loading the US_Map data for the state of wisconsin
+wis.map <- us_map(include = c("WI"))
+
+
+# loading US census 2015 county populations for wisconsin (also from us_map package)
+county.pop <- countypop %>% filter(abbr == "WI")
+county.pop <- subset(county.pop, select=c("fips","pop_2015"))
+
+# Joining county populations with most recent case totals by county
+recent.pop <- wi.recent %>% left_join(county.pop, by=c("fips"))
+
+# Set X axis limits 
+time <- as.POSIXct(strptime(c("2020-03-09",latest_date), format = "%y-%m-%d"))
+
+
+# Setting these colors for use in the formattable table below
+customGreen0 = "#DeF7E9"
+customGreen = "#71CA97"
+customRed = "#ff7f7f"
+customYel = "#C9C271"
+
+```
+
+```{r, include=FALSE, echo=FALSE}
+
+#----------------------------------------------------------------------------------------------------------------Data Load
+#us.co <- readOGR(dsn="../input/usgeodata/usgeo", layer="us.co")
+us.co <- readOGR(dsn="usgeo", layer="us.co")
+
+us.county.pop <- countypop
+
+us.recent <- data %>% filter(date==latest_date) %>% subset(select=c("fips","cases","deaths","county","state"))
+
+us.recent.pop <- us.recent %>% left_join(us.county.pop, by=c("fips"))
+
+
+us.recent.pop$Confirmed_Per_Capita <- round(us.recent.pop$cases/us.recent.pop$pop_2015*10000,2)
+us.recent.pop$Deaths_Per_Capita <- round(us.recent.pop$deaths/us.recent.pop$pop_2015*10000,2)
+
+colnames(us.recent.pop)[colnames(us.recent.pop)=="fips"] <- "GEOID"
+
+us.sp <- sp::merge(us.co,us.recent.pop, by="GEOID")
+
+#Set the color palette (viridis package option a = Magma)
+uspal <- colorNumeric("magma", domain=us.sp$Confirmed_Per_Capita, na.color="transparent")
+
+# Set the popup text option
+uspopup_t <- paste0("County: ", as.character(us.sp$NAME),  "<br>", 
+                  "Confirmed Cases Per 10,000 Residents: ", as.character(us.sp$Confirmed_Per_Capita),  "<br>",
+                  "Total Cases: ", as.character(us.sp$cases))
+
+
+# ggplot(us.recent.pop, aes(x=Confirmed_Per_Capita)) + 
+#      geom_histogram(aes(y=..density..),      # Histogram with density instead of count on y-axis
+#                     binwidth=.5,
+#                     colour="black", fill="white") +
+#      geom_density(alpha=.2, fill="#FF6666")
+ 
+
+```
+
+<br>
+<br>
+
+```{r, include=FALSE, echo=FALSE}
+
+
+# calculate per capita rates
+recent.pop$Confirmed_Per_Capita <- round(recent.pop$cases/recent.pop$pop_2015*10000,2)
+recent.pop$Deaths_Per_Capita <- round(recent.pop$deaths/recent.pop$pop_2015*10000,2)
+
+
+# Using the code below to load then write the sp object loaded along with this dataset until dontcan load tigris directly into kaggle
+
+# library(tigris)
+# ## Create the map object using the tigris package
+# wi.sp <- counties(state = "WI", cb = TRUE)
+# library(rgdal)
+# dir.create("WisGeo")
+# writeOGR(obj=wi.sp, dsn="WisGeo", layer="wi.sp",  driver="ESRI Shapefile")
+
+# Loading state sp file into kaggle, tigris isn't availible in kaggle so I'm loading the sp this way
+
+#----------------------------------------------------------------------------------------------------------------Data Load
+#wi.sp <- readOGR(dsn="../input/wisgeo/WisGeo", layer="wi.sp")
+wi.sp <- readOGR(dsn="WisGeo", layer="wi.sp")
+
+
+
+# Updated to join by FIPS/GEOID which I had thought I already updated... but only for the country map
+#colnames(recent.pop)[colnames(recent.pop)=="county"] <- "NAME"
+recent.pop$GEOID <- recent.pop$fips
+
+wi.sp <- sp::merge(wi.sp,recent.pop, by="GEOID")
+
+
+#Set the color palette (viridis package option a = Magma)
+pal <- colorNumeric("magma", domain=wi.sp$Confirmed_Per_Capita, na.color="transparent")
+# Set the popup text option
+popup_t <- paste0("County: ", as.character(wi.sp$NAME),  "<br>", 
+                  "Confirmed Cases Per 10,000 Residents: ", as.character(wi.sp$Confirmed_Per_Capita),  "<br>",
+                  "Total Cases: ", as.character(wi.sp$cases))
+
+
+
+```
+
+<br>
+<br>
+
+## Wisconsin COVID Rates {.tabset .tabset-fade}
+
+### Choropleth Map 
+
+An interactive Choropleth map showing confirmed COVID-19 Cases by county per 10,000 residents (2015 US Census Data). This provides an understanding of infection case rates scaled to population.
+
+```{r, echo=FALSE}
+
+leaflet() %>%
+  addProviderTiles("CartoDB.Positron") %>%
+  setView(-89, 44.5, zoom = 6.5) %>% 
+  addPolygons(data = wi.sp , 
+              fillColor = ~pal(wi.sp$Confirmed_Per_Capita), 
+              fillOpacity = 0.7, 
+              weight = 0.2, 
+              smoothFactor = 0.2, 
+              popup = ~popup_t) %>%
+  addLegend(pal = pal, 
+            values = wi.sp$Confirmed_Per_Capita, 
+            position = "bottomright", 
+            title = "Cases Per Capita")
+            
+            
+```
+
+
+
+```{r, echo=FALSE, include=FALSE}
+
+# Because the most recent date has missing data, I'm using the next most recent date
+top.cases <- recent.pop %>% arrange(desc(cases))
+top.cases <- top_n(ungroup(top.cases), 20, cases)
+
+loli.plot <- ggplot(top.cases, aes(x=reorder(county,cases), y=cases)) +
+                  geom_segment( aes(x=reorder(county,cases), xend=reorder(county,cases), y=0, yend=cases)) +
+                  geom_point(size=5, color="red", fill=alpha("pink", 0.3), alpha=0.7, shape=21, stroke=2) +
+                  coord_flip() +
+                  labs(x="County", y="Count") +
+                  labs(title="Top 20 Wi Counties Confirmed Case Count")
+
+
+
+wi.top.trend <- wi.all %>% filter(fips %in% top.cases$fips)
+  
+
+
+########################
+## Date Parse Function #
+########################
+
+datefunction <- function(df) {
+
+# Date to char for parsing and conversion
+df$date <- as.character(df$date)
+# Parse the date
+df$year<-sapply(df$date, function(x) as.numeric(strsplit(x,"-")[[1]][1]))
+df$month<-sapply(df$date, function(x) as.numeric(strsplit(x,"-")[[1]][2]))
+df$day<-sapply(df$date, function(x) as.numeric(strsplit(x,"-")[[1]][3]))
+
+# Some years are "2020" some are "20" so this will set them all straight :)
+df$year <- ifelse(df$year == '2020', "20", df$year)
+# Put us back in the year 2000
+df$year <- (as.numeric(df$year) + 2000)
+# Reformat date into y-m-d 
+df$date<-as.Date(paste0(df$year,'-',df$month,'-',df$day), format="%Y-%m-%d")
+# Add some weekdays for good measure
+df$weekday <- weekdays(as.Date(df$date))
+# Put weekdays in order
+df$weekday <- ordered(df$weekday, levels=c("Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"))
+
+df.date <<- df
+
+return(df.date)
+
+}
+
+datefunction(wi.top.trend)
+
+wi.top.trend <- df.date
+
+
+
+#wi.top.trend.plot <- wi.top.trend %>%
+#                   ggplot(aes(x=as.POSIXct(date),y=cases, color=county)) + 
+#                   geom_point(size=.5) + 
+#                   geom_line(alpha=.5) + 
+#                   scale_x_datetime(limits =time) + 
+#                   scale_color_viridis(discrete = TRUE, option ="A") +
+#                   labs(title="WI County Case Trend",
+#                        subtitle = "Plot of top 20 counties by case count") +
+#                   xlab("Date") + 
+#                   ylab("Cases") 
+
+
+wi.top.trend.plot <- wi.top.trend %>%
+                  ggplot(aes(x=as.Date(date),y=cases, color=county)) + 
+                  geom_point(size=.5) + 
+                  geom_line(alpha=.5) +
+                  scale_color_viridis(discrete = TRUE, option ="A") +
+                  labs(title="WI County Case Trend",
+                       subtitle = "Plot of top 20 counties by case count") +
+                  xlab("Date") + 
+                  ylab("Cases")
+
+wi.top.trend.plot <- wi.top.trend.plot + 
+                     geom_vline(xintercept=as.numeric(lubridate::ymd("2020-03-25")), color='red') +
+                     annotate("text", x=as.Date("2020-03-22"), y = 600, label = "Shelter in Place", size=3, colour="red") +
+                     geom_vline(xintercept=as.numeric(lubridate::ymd("2020-04-07")), color='red') +
+                     annotate("text", x=as.Date("2020-04-05"), y = 1500, label = "Election", size=3, colour="red")
+
+
+
+
+```
+
+<br>
+
+
+### Count of Cases
+
+Plot of the top 20 Wisconsin Counties by total case count.
+
+```{r, echo=FALSE}
+
+plot(loli.plot)
+            
+```
+
+<br>
+
+### Trend
+
+Plot of the top 20 Wisconsin Counties by total case count, positive case count over time. Of note: on 3/25 Governor Evers put a "shelter in place" order into effect for all of Wisconsin. If this order is effective we should expect to see a reduction in daily case numbers. 
+
+```{r, echo=FALSE, fig.height=8, fig.width=9}
+
+ggplotly(wi.top.trend.plot)
+
+
+```
+
+
+```{r, echo=FALSE, include=FALSE}
+
+
+MKE <- data %>% filter(state=="Wisconsin" & county=="Milwaukee")
+
+datefunction(MKE)
+MKE <- df.date
+
+mke.plot <- MKE %>%
+                  ggplot(aes(x=as.POSIXct(date),y=cases, color=county)) + 
+                  geom_point(size=.5) + 
+                  geom_line(alpha=.5) +
+                  scale_color_viridis(discrete = TRUE, option ="A") +
+                  labs(title="Milwaukee County Trend") +
+                  xlab("Date") + 
+                  ylab("Cases")
+
+
+
+```
+
+
+### Milwaukee County SIR Projections {.tabset .tabset-fade}
+
+Milwaukee County is both the highest and densely populated in the state. It’s not surprising that we see the greatest number of cases here. 
+
+
+```{r, echo=FALSE, include=FALSE}
+
+# subsetting the confirmed cases in milwaukee county
+Infected <- MKE %>% filter(date <= "2020-04-01") %>% subset(select = c("cases"))
+
+Infected <- as.numeric(unlist(Infected))
+
+Day <- 1:(length(Infected))
+
+# Getting MKE county population from the us_maps package
+N <- countypop %>% filter(county == "Milwaukee County") %>% subset(select = c("pop_2015")) %>% as.numeric()
+
+```
+
+
+```{r, echo=FALSE, include=FALSE}
+
+## Setting SIR initial values 
+
+
+initialvalues <- c(S = N-Infected[1], 
+          I = Infected[1], 
+          R = 0)
+
+## SIR function
+
+SIR <- function(time, state, parameters) {
+  par <- as.list(c(state, parameters))
+  with(par, {
+    dS <- -beta/N * I * S
+    dI <- beta/N * I * S - gamma * I
+    dR <- gamma * I
+    list(c(dS, dI, dR))
+    })
+}
+
+## Function to solve for residual sum of squares
+## From Learning Machines Blog: minimize the sum of the squared differences between the number of infected I at time t and the corresponding number of predicted cases by our model
+
+RSS <- function(parameters) {
+  names(parameters) <- c("beta", "gamma")
+  out <- ode(y = initialvalues, 
+             times = Day, 
+             func = SIR, 
+             parms = parameters)
+  fit <- out[ , 3]
+  sum((Infected - fit)^2)
+}
+
+# Finding values for Beta and gamma with smallest RSS (best fit)
+Opt <- optim(c(0.5, 0.5), RSS, method = "L-BFGS-B", lower = c(0, 0), upper = c(1, 1))
+
+Opt$message
+## [1] "CONVERGENCE: REL_REDUCTION_OF_F <= FACTR*EPSMCH"
+
+# Set the SIR Beta and Gamma parameters
+opt.par <- setNames(Opt$par, c("beta", "gamma"))
+
+#View(opt.par)
+
+ 
+model.overtime <- 1:120 # time in days
+fit <- data.frame(ode(y = initialvalues, times = model.overtime, func = SIR, parms = opt.par))
+
+```
+
+#### SIR
+
+Assuming no interventions (which are already taking place) we can model the worst case trajectory of the pandemic. This is using Case counts and growth in the first 20 days of the pandemic (3/13-4/1).  
+
+```{r, echo=FALSE, include=FALSE}
+
+colnames(fit)[colnames(fit)=="S"] <- "susceptible"
+colnames(fit)[colnames(fit)=="I"] <- "Infected"
+colnames(fit)[colnames(fit)=="R"] <- "Recovered"
+
+fit.m <- reshape2::melt(fit, "time")
+
+fit.plot <- ggplot(fit.m, aes(x = time, 
+                         y = value, 
+                         color = variable)) +
+                  geom_line(size=1.5) +
+                  scale_color_viridis(discrete = TRUE, option ="A") +
+                  scale_y_continuous(name="Cases", labels = scales::comma) +
+                  labs(title="Milwaukee SIR Model") +
+                  xlab("Days") 
+
+
+fit.log.plot <- ggplot(fit.m, aes(x = time, 
+                         y = (log(value)), 
+                         color = variable)) +
+                  geom_line(size=1.5) +
+                  scale_color_viridis(discrete = TRUE, option ="A") +
+                  scale_y_continuous(name="Cases", labels = scales::comma) +
+                  labs(title="Log SIR") +
+                  xlab("Days") 
+
+
+```
+
+
+```{r, echo=FALSE, fig.width=12}
+
+
+grid.arrange( fit.plot, fit.log.plot, ncol=2, nrow=1)
+
+
+```
+
+#### Projection Outcomes
+
+The resulting R0 (basic reproduction number, the number of cases generated from a single infection where the entire population is assumed to be susceptible) is lower here at 1.488 than the expected and widely accepted R0 of 2. Suggesting slower growth during the initial phases. 
+
+```{r, echo=FALSE}
+
+R0 <- setNames(opt.par["beta"] / opt.par["gamma"], "R0")
+
+R0
+
+```
+
+At the height of the pandemic we would see 58,397 infected
+
+```{r, echo=FALSE}
+
+fit[fit$Infected == max(fit$Infected), "Infected", drop = FALSE] # height of pandemic
+#Infected
+#row:33,	3526761	
+
+```
+
+Assuming the current WHO estimated mortality of 3.5%, results in a total of 2,043 fatalities in Milwaukee County.
+
+```{r, echo=FALSE}
+ 
+max(fit$Infected) * 0.035 # Max fatalities assuming 3.5% mortality
+
+```
+
+
+#### Current MKE Trend
+
+Plot of confirmed cases over time in Milwaukee county:
+
+```{r, echo=FALSE, warning=FALSE, fig.width=10}
+
+plot(mke.plot)
+
+
+```
+
+
+#### Sources
+
+A quick overview of the SIR model itself can be found [here](https://www.public.asu.edu/~hnesse/classes/sir.html). <br>
+
+Much of the SIR model has been adapted from the [Learning Machines Blog](https://blog.ephorie.de/epidemiology-how-contagious-is-novel-coronavirus-2019-ncov). <br>
+
+With Additional references from [r-bloggers](https://www.r-bloggers.com/sir-model-with-desolve-ggplot2/). <br>
+
+Further inspiration from Tim Churches fantastic blog on COVID-19: <br>
+Churches (2020, Feb. 18). Tim Churches Health Data Science Blog: Analysing COVID-19 (2019-nCoV) outbreak data with R - part 1. Retrieved from https://timchurches.github.io/blog/posts/2020-02-18-analysing-covid-19-2019-ncov-outbreak-data-with-r-part-1/ 
+
+<br>
+<br>
+
+```{r, echo=FALSE}
+
+
+
+
+
+
+# of the counties which have 1000 cases and aren't missing a fips code (WHICH REMOVES NYC DAMNIT)
+min.k <- data %>% filter(cases >= 1000 & !is.na(fips)) %>% arrange(date)
+# grab those counties when they had between 0-1000 cases
+
+t.cases <- data %>% filter(fips %in% min.k$fips & cases <= 1000)
+# determine the number of days it took to get to 1000 cases
+t.cases <-t.cases %>% group_by(fips) %>% mutate(id = row_number())
+t.cases <-t.cases %>% group_by(fips) %>% mutate(id = 1:n())
+t.cases <-t.cases %>% group_by(fips) %>% mutate(id = seq_len(n()))
+t.cases <-t.cases %>% group_by(fips) %>% mutate(id = seq_along(date))
+
+# the number of days it took a zip code, with at least 1000 cases to get to 1000 by fips
+t.cases.max <- t.cases %>% group_by(fips) %>% summarise(id = max(id)) %>% rename(NumDays = id)
+
+#avgDays <- t.cases.max %>% summarise(id = mean(id)) %>% rename(AvgNumDays = id)
+
+
+cases.max.hist <- t.cases.max %>%
+                  ggplot( aes(x=NumDays, y = ..density..)) +
+                  geom_histogram( binwidth=2, fill="#453276", color="#e9ecef", alpha=0.7) +
+                  geom_density(fill="#50b773", color="#347f4d", alpha=0.4) +
+                  labs(title="Number of Days to 1000 Cases",
+                       subtitle = "Histogram Bin = 2",
+                       y="density",
+                       x="Number of Days")
+
+
+# Find bottom 10 values and fips codes
+max.tbl <- top_n(ungroup(t.cases.max), -10, NumDays)
+
+max.tbl <- min.k %>% 
+              filter(date==latest_date) %>% 
+              subset(select=c("fips","cases","county","state")) %>%  
+              left_join(max.tbl[,c("fips","NumDays")], by=c("fips"))  
+
+# Reorder the columns for table
+max.tbl <- max.tbl[c("fips","state", "county", "cases","NumDays")]
+
+
+max.tbl <-  max.tbl %>%
+            filter(!is.na(NumDays)) %>%
+            subset(select = c("state","county","cases","NumDays")) %>%
+            rename(State=state, County=county, Cases=cases, `Days to 1k`=NumDays) %>% 
+            arrange(`Days to 1k`) %>%
+            formattable(align =c("l","l","r","r"),
+                list(State = formatter("span", style = ~ formattable::style(color = "grey",font.weight = "bold")),
+                `Days to 1k` = color_bar(customRed)))
+
+
+cpc.hist <- us.recent.pop %>%
+                  ggplot( aes(x=Confirmed_Per_Capita, y = ..density..)) +
+                  geom_histogram( binwidth=5, fill="#453276", color="#e9ecef", alpha=0.7) +
+                  geom_density(fill="#50b773", color="#347f4d", alpha=0.4)
+
+
+dpc.hist <- us.recent.pop %>%
+                  ggplot( aes(x=Deaths_Per_Capita, y = ..density..)) +
+                  geom_histogram(bins=30, fill="#453276", color="#e9ecef", alpha=0.7) +
+                  geom_density(fill="#50b773", color="#347f4d", alpha=0.4)
+
+
+
+```
+
+<br>
+<br>
+
+# US County Map
+
+An interactive Choropleth map showing confirmed COVID-19 Cases by county per 10,000 residents (2015 US Census Data). 
+
+```{r, echo=FALSE}
+
+leaflet() %>%
+  addProviderTiles("CartoDB.Positron") %>%
+  setView(-98, 39, zoom = 4) %>% 
+  addPolygons(data = us.sp , 
+              fillColor = ~uspal(us.sp$Confirmed_Per_Capita), 
+              fillOpacity = 0.7, 
+              weight = 0.2, 
+              smoothFactor = 0.2, 
+              popup = ~uspopup_t) %>%
+  addLegend(pal = uspal, 
+            values = us.sp$Confirmed_Per_Capita, 
+            position = "bottomright", 
+            title = "Cases Per Capita")
+            
+            
+```
+
+<br>
+<br>
+
+# National Rates of Spread
+
+Working to create a number of different labels to model census data and county population health profiles. 
+
+## Measures {.tabset .tabset-fade}
+
+### Fastest to 1,000 Cases
+
+To create a label for rapid growth, I wanted to find all counties with at least 1000 cases, then find the average number of days it took to get to 1000 confirmed cases. This is not adjusted for population. Taking the quartile of the number of days to 1000 confirmed cases, we'll want to take the bottom 25% (counties with the fastest rate of growth) as our label for identifying features of rapid spread.
+
+```{r, echo=FALSE}
+
+formattable(max.tbl)
+
+quantile(t.cases.max$NumDays)
+
+
+```
+
+```{r, echo=FALSE}
+
+plot(cases.max.hist)
+
+```
+
+<br>
+
+
+
+```{r, echo=FALSE, include=FALSE}
+
+# Creating subsets of the labels: fastest to 1000 and highest cases per capita
+
+# find the bottom 25% or fastest counties to 1000 cases
+fastestOneK <- subset(t.cases.max, NumDays < quantile(NumDays, prob = 0.25, na.rm = TRUE))
+fastestOneK$FastestOneK <- 1 
+
+# Top case growth in past 7 and 30 days
+
+growth <- data %>% filter(!is.na(fips)) %>% group_by(fips) %>% arrange(date)
+
+# Reformatting the latest date as a data frame, renaming the column to last week to subtract 7 days, also create month df here as well
+latest_date.df <- as.data.frame(latest_date) 
+names(latest_date.df)[1]<-paste("Date")
+LastWeek.df <- latest_date.df$Date - 7
+LastMonth.df <- latest_date.df$Date - 30
+LatestDate.df <- latest_date.df$Date
+
+# Subset last 7, 30 days, and currnt value                                                         
+tseven <- growth %>% filter(date == (LastWeek.df)) %>% rename(lastweek = cases)
+tthirty <- growth %>% filter(date == (LastMonth.df)) %>% rename(lastmonth = cases)
+tcurrent <- growth %>% filter(date == (LatestDate.df)) %>% rename(currentcases = cases)
+
+
+# Join the last wee and last month totals to our current df
+tcurrent <- tcurrent %>% left_join(tseven[,c("fips","lastweek")], by=c("fips"))
+tcurrent <- tcurrent %>% left_join(tthirty[,c("fips","lastmonth")], by=c("fips"))
+
+# Join current population and cases per capita from previous df above which of course uses GEOID
+us.recent.pop$fips <- us.recent.pop$GEOID
+tcurrent <- tcurrent %>% left_join(us.recent.pop[,c("fips","pop_2015","Confirmed_Per_Capita")], by=c("fips"))
+
+# calculate rates per capita growth over past week and month
+tcurrent$lastweek_percapita <- round(tcurrent$lastweek/tcurrent$pop_2015*10000,2)
+tcurrent$lastmonth_percapita <- round(tcurrent$lastmonth/tcurrent$pop_2015*10000,2)
+
+# % difference between current and previous values
+tcurrent$lastweek_pc_delta <- round((tcurrent$Confirmed_Per_Capita - tcurrent$lastweek_percapita) / 
+                                 ((tcurrent$Confirmed_Per_Capita + tcurrent$lastweek_percapita)/
+                                    2)*100,2)
+                               
+                               
+tcurrent$lastmonth_pc_delta <- round((tcurrent$Confirmed_Per_Capita - tcurrent$lastmonth_percapita) /
+                                       ((tcurrent$Confirmed_Per_Capita + tcurrent$lastmonth_percapita)/
+                                          2)*100,2)
+
+
+# ID top quartile (> 75%) of postivie % change per capita over the past week and month
+topweekgrowth <- subset(tcurrent, lastweek_pc_delta > quantile(lastweek_pc_delta, prob = 0.75, na.rm = TRUE))
+topweekgrowth$topweekgrowth <- 1
+topmonthgrowth <- subset(tcurrent, lastmonth_pc_delta > quantile(lastmonth_pc_delta, prob = 0.75, na.rm = TRUE))
+topmonthgrowth$topmonthgrowth <- 1
+
+topcurrentcasecount <- subset(tcurrent, Confirmed_Per_Capita > quantile(Confirmed_Per_Capita, prob = 0.75, na.rm = TRUE))
+topcurrentcasecount$topcurrentcasecount <- 1
+
+
+# Find the bottom 25% growth per capita week/month
+
+lowestweekgrowth <- tcurrent %>% filter(fips %in% min.k$fips) %>% subset(lastweek_pc_delta < quantile(lastweek_pc_delta, prob = 0.25, na.rm = TRUE))
+lowestweekgrowth$lowestweekgrowth <- 1
+
+lowestmonthgrowth <- tcurrent %>% filter(fips %in% min.k$fips) %>% subset(lastmonth_pc_delta < quantile(lastmonth_pc_delta, prob = 0.25, na.rm = TRUE))
+lowestmonthgrowth$lowestmonthgrowth <- 1
+
+# Top quartile deaths per capita
+topdeathcpc <- subset(us.recent.pop, Deaths_Per_Capita > quantile(Deaths_Per_Capita, prob = 0.75, na.rm = TRUE))
+topdeathcpc$topdeathcpc <- 1
+
+# If not all fips are represented in tcurrent I could be exlcuding them in these joins-- though, we could assume that only counties which have reported cases are of concern here and thus just interested in joining data and labels to those.
+labels <- tcurrent %>% subset(select = c("fips","date","state","county"))
+
+#Features created, merging with main labels dataframe : 
+# Counties with over 1k cases fastest to reach 1k cases (fastestOneK$FastestOneK)
+labels <- labels %>% left_join(fastestOneK[,c("fips","FastestOneK")], by=c("fips"))
+# Top quartile percent change in cases per capita over the past week (topweekgrowth$topweekgrowth)
+labels <- labels %>% left_join(topweekgrowth[,c("fips","topweekgrowth")], by=c("fips"))
+# Top quartile percent change in cases per capita over the past month (topmonthgrowth$topmonthgrowth)
+labels <- labels %>% left_join(topmonthgrowth[,c("fips","topmonthgrowth")], by=c("fips"))
+# Top quartile cases per capita (topcurrentcasecount$topcurrentcasecount)
+labels <- labels %>% left_join(topcurrentcasecount[,c("fips","topcurrentcasecount")], by=c("fips"))
+# Top quartile deaths per capita (topdeathcpc$topdeathcpc)
+labels <- labels %>% left_join(topdeathcpc[,c("fips","topdeathcpc")], by=c("fips"))
+
+# These should be reworked to limit to those counties with over 1k cases
+# Lowest quartile percent change in cases per capita over the past week (lowestweekgrowth$lowestweekgrowth)
+labels <- labels %>% left_join(lowestweekgrowth[,c("fips","lowestweekgrowth")], by=c("fips"))
+# Lowest quartile percent change in cases per capita over the past month (lowestmonthgrowth$lowestmonthgrowth)
+labels <- labels %>% left_join(lowestmonthgrowth[,c("fips","lowestmonthgrowth")], by=c("fips"))
+
+
+# Replace NA with 0
+labels[is.na(labels)] <- 0
+
+
+```
+
+### Cases Per Capita
+
+Distribution of the top 25% cases per capita, distribution shown here.
+
+
+```{r, echo=FALSE, warning=FALSE, include=FALSE}
+
+cpc.tbl <-  top_n(ungroup(topcurrentcasecount), 10, Confirmed_Per_Capita) %>%
+            subset(select = c("state","county","pop_2015","currentcases","Confirmed_Per_Capita")) %>%
+            rename(State=state, County=county, Population=pop_2015, `Current Cases`=currentcases, `Cases Per Capita (CPC/10k)`=Confirmed_Per_Capita) %>% 
+            arrange(desc(`Cases Per Capita (CPC/10k)`)) %>%
+            formattable(align =c("l","l","r","r","r"),
+                list(State = formatter("span", style = ~ formattable::style(color = "grey",font.weight = "bold")),
+                `Cases Per Capita (CPC/10k)` = color_bar(customRed)))
+
+
+```
+
+Top 10 counties by cases per capita
+
+```{r}
+
+formattable(cpc.tbl)
+
+```
+
+```{r, echo=FALSE, warning=FALSE}
+
+
+quantile(us.recent.pop$Confirmed_Per_Capita, na.rm = TRUE)
+
+
+plot(cpc.hist)
+
+
+```
+
+
+
+### Top Growth: Past Week
+
+Here I've identified the top quartile of counties with the fastest percent increase in positive cases per capita in the past week (10,000 citizens, 2015 census data). Top, the distribution of percent change in cases percapita, below that, the top 10 counties with the highest percent change.
+
+
+```{r, echo=FALSE, include=FALSE, warning=FALSE}
+
+
+tpw <- tcurrent %>%
+                  ggplot( aes(x=lastweek_pc_delta, y = ..density..)) +
+                  geom_histogram( binwidth=5, fill="#453276", color="#e9ecef", alpha=0.7) +
+                  geom_density(fill="#50b773", color="#347f4d", alpha=0.4) +
+                  labs(title="Distribution of Percent change in Cases Per Capita",
+                       subtitle = "Over the past week",
+                       y="Density",
+                       x="Percent Change")
+
+
+tpw.tbl <-  top_n(ungroup(topweekgrowth), 10, lastweek_pc_delta) %>%
+            subset(select = c("state","county","pop_2015","currentcases","Confirmed_Per_Capita", "lastweek_pc_delta")) %>%
+            rename(State=state, County=county, Population=pop_2015, `Current Cases`=currentcases, `Cases Per Capita (CPC/10k)`=Confirmed_Per_Capita, `Percent Increase CPC Past Week` = lastweek_pc_delta) %>% arrange(desc(`Percent Increase CPC Past Week`)) %>%
+            formattable(align =c("l","l","r","r","r","r"),
+                list(State = formatter("span", style = ~ formattable::style(color = "grey",font.weight = "bold")),
+                `Percent Increase CPC Past Week` = color_bar(customRed)))
+
+
+```
+
+
+```{r, echo=FALSE, warning=FALSE}
+
+formattable(tpw.tbl)
+
+
+plot(tpw)
+
+
+```
+
+
+### Top Growth: Past Month
+
+Again, the top quartile of counties with the fastest percent increase in positive cases per capita within the last 30 days (10,000 citizens, 2015 census data). Top, the distribution of percent change in cases percapita, below that, the top 10 counties with the highest percent change over the past 30 days.
+
+```{r, echo=FALSE, warning=FALSE}
+
+tpm <- tcurrent %>%
+                  ggplot( aes(x=lastmonth_pc_delta, y = ..density..)) +
+                  geom_histogram( binwidth=5, fill="#453276", color="#e9ecef", alpha=0.7) +
+                  geom_density(fill="#50b773", color="#347f4d", alpha=0.4) +
+                  labs(title="Distribution of Percent change in Cases Per Capita",
+                       subtitle = "Over the past Month",
+                       y="Density",
+                       x="Percent Change")
+
+
+tpm.tbl <-  top_n(ungroup(topmonthgrowth), 10, lastmonth_pc_delta) %>%
+            subset(select = c("state","county","pop_2015","currentcases","Confirmed_Per_Capita", "lastmonth_pc_delta")) %>%
+            rename(State=state, County=county, Population=pop_2015, `Current Cases`=currentcases, `Cases Per Capita (CPC/10k)`=Confirmed_Per_Capita, `Percent Increase CPC Past Month` = lastmonth_pc_delta) %>% arrange(desc(`Percent Increase CPC Past Month`)) %>%
+            formattable(align =c("l","l","r","r","r","r"),
+                list(State = formatter("span", style = ~ formattable::style(color = "grey",font.weight = "bold")),
+                `Percent Increase CPC Past Month` = color_bar(customRed)))
+
+
+
+```
+
+
+```{r, echo=FALSE, warning=FALSE}
+
+formattable(tpm.tbl)
+
+plot(tpm)
+
+
+```
+
+
+### Deaths Per Capita
+
+Given the poor distribution here, I'm going to rework this a bit. In the meantime I'll focus on the case growth labels.
+
+
+```{r, echo=FALSE, include=FALSE}
+
+# Creatinga top quartile deaths per capita label, from the us.recent.pop df (county.x)
+
+tdcpc.tbl <-  top_n(ungroup(topdeathcpc), 20, Deaths_Per_Capita) %>%
+            subset(select = c("state","county.x","pop_2015","deaths","Deaths_Per_Capita")) %>%
+            rename(State=state, County=county.x, Population=pop_2015, `Deaths`=deaths, `Deaths Per Capita (CPC/10k)`=Deaths_Per_Capita) %>% 
+            arrange(desc(`Deaths Per Capita (CPC/10k)`)) %>%
+            formattable(align =c("l","l","r","r","r"),
+                list(State = formatter("span", style = ~ formattable::style(color = "grey",font.weight = "bold")),
+                `Deaths Per Capita (CPC/10k)` = color_bar(customRed)))
+
+
+
+```
+
+
+
+```{r, echo=FALSE, warning=FALSE}
+
+
+formattable(tdcpc.tbl)
+
+
+quantile(us.recent.pop$Deaths_Per_Capita, na.rm = TRUE)
+
+
+```
+
+```{r, warning=FALSE, echo=FALSE}
+
+plot(dpc.hist)
+
+
+```
+
+### Slowest Growth: After 1k
+
+In effort to avoid over sampling counties with simply low population and low case counts, I've selected from those which have a minimum of 1,000 confirmed cases. Put another way, of those counties with at least 1,00 confirmed cases, which of them have had the lowest percent change per capita over the past week?
+
+
+```{r, echo=FALSE, include=FALSE, warning=FALSE}
+
+
+lpw <- lowestweekgrowth %>%
+                  ggplot( aes(x=lastweek_pc_delta, y = ..density..)) +
+                  geom_histogram( binwidth=2, fill="#453276", color="#e9ecef", alpha=0.7) +
+                  geom_density(fill="#50b773", color="#347f4d", alpha=0.4) +
+                  labs(title="Lowest Quartile Distribution of Percent change in Cases Per Capita",
+                       subtitle = "Over the past week of counties with at least 1,000 cases",
+                       y="Density",
+                       x="Percent Change")
+
+
+lpw.tbl <-  top_n(ungroup(lowestweekgrowth), -10, lastweek_pc_delta) %>%
+            subset(select = c("state","county","pop_2015","currentcases","Confirmed_Per_Capita", "lastweek_pc_delta")) %>%
+            rename(State=state, County=county, Population=pop_2015, `Current Cases`=currentcases, `Cases Per Capita (CPC/10k)`=Confirmed_Per_Capita, `Percent Increase CPC Past Week` = lastweek_pc_delta) %>% arrange(desc(`Percent Increase CPC Past Week`)) %>% 
+  arrange(`Percent Increase CPC Past Week`) %>%
+            formattable(align =c("l","l","r","r","r","r"),
+                list(State = formatter("span", style = ~ formattable::style(color = "grey",font.weight = "bold")),
+                `Percent Increase CPC Past Week` = color_bar(customRed)))
+
+
+```
+
+
+```{r, echo=FALSE, warning=FALSE}
+
+
+formattable(lpw.tbl)
+
+plot(lpw)
+
+
+```
+
+
+<br>
+<br>
+
+## County Data Sources {.tabset .tabset-fade}
+
+### Overview
+
+Seeking to identify significant features in case growth, I brought together a few different data sources For simplicity of running the analysis on kaggle, I've uploaded the resulting feature data frame as an external data source. For transparency, I've included the sources and formatting in the sections below. 
+
+### Census
+
+Where variables are present in both census and health profile sources, preference was given to the County Health Profile data. 
+Using the Tidycensus package, the following variables were loaded from the 2015 American Community Survey (ACS) data [SOURCE](https://www.census.gov/programs-surveys/acs/data.html). This differs from 10-year census data in that it is an annual survey of 3 million households and therefore represents estimates of various features. Additional information and examples can be found [HERE](https://walkerke.github.io/tidycensus/articles/basic-usage.html) 
+
+```{r, eval=FALSE}
+
+library(tidycensus)
+
+v17 <- load_variables(2015, "acs5", cache = TRUE)
+
+census2015 <- get_acs(geography = "county", 
+              variables = c(countypop = "B01003_001",
+                            male = "B01001_002",
+                            female = "B01001_026",
+                            racewhite = "B02001_002",
+                            raceblack = "B02001_003",
+                            raceAMind = "B02001_004",
+                            raceasian = "B02001_005",
+                            transalone = "B08105F_002",
+                            transwalk = "B08105F_005",
+                            transpublic = "B08105F_004",
+                            medincome = "B19013_001",
+                            povratioU1 = "B05010_002",
+                            povratio1to2 = "B05010_010",
+                            povbelow100 = "B06012_002",
+                            housefamily = "B11011_002",
+                            unitsone = "B25024_002",
+                            units10to20 = "B25024_007",
+                            units50plus = "B25024_009",
+                            edlesshigh = "B06009_002",
+                            edhighgrad = "B06009_003",
+                            edassociates = "B06009_004",
+                            edbachelors = "B06009_005",
+                            edgradprof = "B06009_006"),
+              year = 2015)
+
+```
+
+### County Health Profile
+
+County health profile and demographic information obtained from the University of Wisconsin Population Health Institute [CountyHealthRankings.org](https://www.countyhealthrankings.org/explore-health-rankings/rankings-data-documentation). using the 2020 Health Rankings National Data. This is pulled from the county "additional health data" tab of the linked analysis. Again, Where variables are present in both census and health profile sources, preference was given to the County Health Profile data. 
+
+```{r, eval=FALSE}
+
+
+counthealthadditional <- read_csv("healthdata/countyadditionalhealthdata.csv")
+
+healthsubset <- counthealthadditional %>% subset(select = c("FIPS",
+                                                            "Life Expectancy",
+                                                            "Child Mortality Rate",
+                                                            "Infant Mortality Rate",
+                                                            "% Frequent Physical Distress",
+                                                            "% Adults with Diabetes",
+                                                            "% Frequent Mental Distress",
+                                                            "% Food Insecure",
+                                                            "% Limited Access to Healthy Foods",
+                                                            "Drug Overdose Mortality Rate",
+                                                            "Motor Vehicle Mortality Rate",
+                                                            "% Insufficient Sleep",
+                                                            "% Uninsured", 
+                                                            "Average Grade Performance",
+                                                            "Median Household Income",
+                                                            "% Enrolled in Free or Reduced Lunch",
+                                                            "Segregation index",
+                                                            "Homicide Rate",
+                                                            "% Homeowners",
+                                                            "% Severe Housing Cost Burden",
+                                                            "% less than 18 years of age",
+                                                            "% 65 and over",
+                                                            "% Black",
+                                                            "% Asian",
+                                                            "% Hispanic",
+                                                            "% American Indian & Alaska Native",
+                                                            "% Non-Hispanic White",
+                                                            "% Not Proficient in English",
+                                                            "% Female",
+                                                            "% Rural",
+                                                            "Population"))
+
+```
+
+
+### 2016 Election Totals
+
+I've included this data purely as a matter of curiosity. The unfortunate reality of America today is that even a global pandemic has been politicized. This feature may be implicated in various measures of growth as political factions mobilized around "safer at home" orders, but I suspect that it will merely reflect the correlated nature of voting habits across Democrat leaning urban centers and rural traditionally Republican counties.
+
+Election outcome information obtained from [Harvard Dataverse](https://dataverse.harvard.edu/dataset.xhtml?persistentId=doi:10.7910/DVN/VOQCHQ) as sourced from: MIT Election Data and Science Lab, 2018, "County Presidential Election Returns 2000-2016", https://doi.org/10.7910/DVN/VOQCHQ, Harvard # #Dataverse, V6, UNF:6:ZZe1xuZ5H2l4NUiSRcRf8Q== [fileUNF] 
+
+```{r, eval=FALSE}
+
+# Only looking at Republican and Democrat vote totals for the 2016 presidential election
+electiondata <- read_csv("countypres_2000-2016.csv") %>% filter(year==2016 & party != "Other")
+
+electiondata$percentvote <- round((electiondata$candidatevotes / electiondata$totalvotes)*100,2)
+electionp <- electiondata %>% subset(select = c("candidate","percentvote","FIPS")) 
+
+electionoutcome <- reshape2::dcast(electionp, FIPS ~ candidate, fun.aggregate = sum, value.var=c("percentvote"))
+
+```
+
+
+### A Note on Error
+
+Combining Data from various sources has risk not only in the ability to understand context but also in scale. A simple example being the different county populations used between ACS census data and Health Profile estimates. Additionally, ACS data alone is an estimate at 90% CI. These issues are unnaccounted for in the following analysis but is something I'll continue to work through in the coming days and weeks. 
+
+I'm continuing to look for measures of obesity, asthma, and county level air quality measures (year summaries).
+
+
+```{r, eval=FALSE, echo=FALSE}
+
+library(tidycensus)
+
+v17 <- load_variables(2015, "acs5", cache = TRUE)
+
+census2015 <- get_acs(geography = "county", 
+              variables = c(transalone = "B08105F_002",
+                            transwalk = "B08105F_005",
+                            transpublic = "B08105F_004",
+                            povratioU1 = "B05010_002",
+                            povratio1to2 = "B05010_010",
+                            povbelow100 = "B06012_002",
+                            housefamily = "B11011_002",
+                            unitsone = "B25024_002",
+                            units10to20 = "B25024_007",
+                            units50plus = "B25024_009",
+                            edlesshigh = "B06009_002",
+                            edhighgrad = "B06009_003",
+                            edassociates = "B06009_004",
+                            edbachelors = "B06009_005",
+                            edgradprof = "B06009_006"),
+              year = 2015)
+
+
+# Removed, found in health profile data
+#
+#                            male = "B01001_002",
+#                            female = "B01001_026",
+#                            racewhite = "B02001_002",
+#                            raceblack = "B02001_003",
+#                            raceAMind = "B02001_004",
+#                            raceasian = "B02001_005",
+#medincome = "B19013_001",
+
+
+# Grabbing the population seperately for addition to the df post pivot
+census.2015acspop <- get_acs(geography = "county", 
+              variables = c(countypop = "B01003_001"),
+              year = 2015)
+
+# create/rename population columns
+census.2015acspop$Population <- census.2015acspop$estimate
+
+# pivot long form to wide and calculate all counts as percentage of population
+census.pivot <- census2015[,c("GEOID","NAME","variable","estimate")]
+census.pivot <- reshape2::dcast(census2015, GEOID+NAME ~ variable, value.var=c("estimate"))
+
+# Join pivot frame with census population
+census.pivot <- census.pivot %>% left_join(census.2015acspop[,c("GEOID","Population")], by=c("GEOID"))
+
+# calculate percentage of all counts                                                
+census.pct <- census.pivot %>% mutate_at(vars(edassociates:unitsone) , funs( round(( ./census.pivot$Population * 100),2))) 
+
+#create fips columns for additional joins, 
+census.pct <- census.pct %>% rename(fips=GEOID) 
+census.pct$Population <- NULL
+
+
+# https://www.countyhealthrankings.org/explore-health-rankings/rankings-data-documentation
+# 2020 county data 
+#Find national statistics, state-level data, and technical documentation including changes to our measures, guidelines for comparing data #across states, information about data years and sources, and more.
+
+countyhealthrank <- read_csv("healthdata/countyrankedmeasuredata.csv")
+counthealthadditional <- read_csv("healthdata/countyadditionalhealthdata.csv")
+
+healthsubset <- counthealthadditional %>% subset(select = c("FIPS",
+                                                            "Life Expectancy",
+                                                            "Child Mortality Rate",
+                                                            "Infant Mortality Rate",
+                                                            "% Frequent Physical Distress",
+                                                            "% Adults with Diabetes",
+                                                            "% Frequent Mental Distress",
+                                                            "% Food Insecure",
+                                                            "% Limited Access to Healthy Foods",
+                                                            "Drug Overdose Mortality Rate",
+                                                            "Motor Vehicle Mortality Rate",
+                                                            "% Insufficient Sleep",
+                                                            "% Uninsured", 
+                                                            "Average Grade Performance",
+                                                            "Median Household Income",
+                                                            "% Enrolled in Free or Reduced Lunch",
+                                                            "Segregation index",
+                                                            "Homicide Rate",
+                                                            "% Homeowners",
+                                                            "% Severe Housing Cost Burden",
+                                                            "% less than 18 years of age",
+                                                            "% 65 and over",
+                                                            "% Black",
+                                                            "% Asian",
+                                                            "% Hispanic",
+                                                            "% American Indian & Alaska Native",
+                                                            "% Non-Hispanic White",
+                                                            "% Not Proficient in English",
+                                                            "% Female",
+                                                            "% Rural",
+                                                            "Population"))
+
+
+
+
+healthsubset <- healthsubset %>% rename(fips=FIPS)
+
+
+county.profile.data <- census.pct %>% left_join(healthsubset, by=c("fips"))
+
+
+
+# https://dataverse.harvard.edu/dataset.xhtml?persistentId=doi:10.7910/DVN/VOQCHQ
+# MIT Election Data and Science Lab, 2018, "County Presidential Election Returns 2000-2016", https://doi.org/10.7910/DVN/VOQCHQ, Harvard # #Dataverse, V6, UNF:6:ZZe1xuZ5H2l4NUiSRcRf8Q== [fileUNF] 
+
+electiondata <- read_csv("countypres_2000-2016.csv") %>% filter(year==2016 & party != "Other")
+
+electiondata$percentvote <- round((electiondata$candidatevotes / electiondata$totalvotes)*100,2)
+electionp <- electiondata %>% subset(select = c("candidate","percentvote","FIPS")) 
+
+#https://stackoverflow.com/questions/33051386/dcast-error-aggregation-function-missing-defaulting-to-length
+
+electionoutcome <- reshape2::dcast(electionp, FIPS ~ candidate, fun.aggregate = sum, value.var=c("percentvote"))
+electionoutcome <- electionoutcome %>% rename(fips.num=FIPS)
+
+# election outocme data has fips in numeric type w/o leading zeros
+# I'm creating a numerical column specifically for this join:
+county.profile.data$fips.num <- as.numeric(county.profile.data$fips)
+
+
+county.profile.data <- county.profile.data %>% left_join(electionoutcome, by=c("fips.num"))
+
+# and then immediately removing it: 
+county.profile.data$fips.num <- NULL
+
+
+#Tada! final dataset for modeling here: 
+#View(county.profile.data)
+  
+ 	
+write.csv(county.profile.data, "county_profile_data.csv", row.names = FALSE)
+
+
+```
+
+<br>
+<br>
+
+```{r, include=FALSE}
+
+#Split Violin plotting credit to:
+#https://stackoverflow.com/questions/35717353/split-violin-plot-with-ggplot2
+
+GeomSplitViolin <- ggproto("GeomSplitViolin", GeomViolin, 
+                           draw_group = function(self, data, ..., draw_quantiles = NULL) {
+                             data <- transform(data, xminv = x - violinwidth * (x - xmin), xmaxv = x + violinwidth * (xmax - x))
+                             grp <- data[1, "group"]
+                             newdata <- plyr::arrange(transform(data, x = if (grp %% 2 == 1) xminv else xmaxv), if (grp %% 2 == 1) y else -y)
+                             newdata <- base::rbind(newdata[1, ], newdata, newdata[nrow(newdata), ], newdata[1, ])
+                             newdata[c(1, nrow(newdata) - 1, nrow(newdata)), "x"] <- round(newdata[1, "x"])
+                             
+                             if (length(draw_quantiles) > 0 & !scales::zero_range(range(data$y))) {
+                               stopifnot(all(draw_quantiles >= 0), all(draw_quantiles <=
+                                                                         1))
+                               quantiles <- ggplot2:::create_quantile_segment_frame(data, draw_quantiles)
+                               aesthetics <- data[rep(1, nrow(quantiles)), setdiff(names(data), c("x", "y")), drop = FALSE]
+                               aesthetics$alpha <- rep(1, nrow(quantiles))
+                               both <- base::cbind(quantiles, aesthetics)
+                               quantile_grob <- GeomPath$draw_panel(both, ...)
+                               ggplot2:::ggname("geom_split_violin", grid::grobTree(GeomPolygon$draw_panel(newdata, ...), quantile_grob))
+                             }
+                             else {
+                               ggplot2:::ggname("geom_split_violin", GeomPolygon$draw_panel(newdata, ...))
+                             }
+                           })
+
+geom_split_violin <- function(mapping = NULL, data = NULL, stat = "ydensity", position = "identity", ..., 
+                              draw_quantiles = NULL, trim = TRUE, scale = "area", na.rm = FALSE, 
+                              show.legend = NA, inherit.aes = TRUE) {
+  layer(data = data, mapping = mapping, stat = stat, geom = GeomSplitViolin, 
+        position = position, show.legend = show.legend, inherit.aes = inherit.aes, 
+        params = list(trim = trim, scale = scale, draw_quantiles = draw_quantiles, na.rm = na.rm, ...))
+}
+
+
+
+```
+
+
+
+
+
+```{r, echo=FALSE, include=FALSE}
+
+
+cpd.save <- county_profile_data
+
+
+
+```
+
+<br>
+<br>
+
+## Feature Exploration {.tabset .tabset-fade}
+
+```{r, echo=FALSE, include=FALSE, warning=FALSE}
+
+cpd.histo <- county_profile_data %>% 
+             select(-c(fips,NAME)) %>%
+              gather(key = "var", value = "value") %>% 
+                    ggplot( aes(value, y = ..density..)) +
+                    geom_histogram( binwidth=5, fill="#453276", color="#e9ecef", alpha=0.7) +
+                    geom_density(fill="#50b773", color="#347f4d", alpha=0.4) +
+                    facet_wrap(~var, scales = "free")
+
+
+na.count <- county_profile_data %>%
+            select(-c(fips,NAME)) %>%
+            summarise_all(funs(sum(is.na(.)))) %>%
+            reshape2::melt() %>%
+            arrange(desc(value)) %>%
+            ggplot(aes(x= reorder(variable, -value), y=value)) +
+            geom_bar(stat = "identity", fill="#453276") +
+            theme(axis.text.x = element_text(angle = 90)) +
+            labs(title="Count of NA by Feature", x="")
+
+
+
+```      
+                 
+### Histogram
+                       
+```{r, echo=FALSE, warning=FALSE, fig.width=14, fig.height=14}
+
+plot(cpd.histo)          
+
+```
+          
+### NA Values
+
+We'll need to go in and clean up the NA features, plotting the count of NA responses by feature. With just over 3000 observations (counties) in the dataset over half are mising infant mortality and homicide rates. Those features will be removed from the dataset. Additionally, many variables are missing data for puerto rico, which I'll remove from our dataset as a result.
+
+
+```{r, echo=FALSE, fig.width=10}
+
+plot(na.count)
+
+```
+
+
+### MICE (Imputation)
+
+Using MICE (Multivariate Imputation via Chained Equations) to calculate missing variables using predicitve mean matching. This method assumes data is missing at random and imputes data variable by variable. First using VIM to visualize missing data and identfiy patters:
+
+
+```{r, echo=FALSE, include=FALSE}
+
+imp <- county_profile_data
+
+library(VIM) #hides dcast and melt from reshape2, additional from dplyr/lubridate that I'm not using
+library(mice) #hides cbind and rbind used in the split violin plot
+
+imp$`Infant Mortality Rate` <- NULL
+imp$`Homicide Rate` <- NULL
+
+# Turns out that Mice column parsing is extremely sensitive to non-standard characters, so here I'm destroying my nice column names:
+
+# Remove Puerto Rico, missing data from community health profile
+imp <- subset(imp, !grepl(", Puerto Rico", imp$NAME))
+imp.save <- imp
+
+
+names(imp) <- gsub(" ", "", names(imp))
+names(imp) <- gsub("%", "pct", names(imp))
+names(imp) <- gsub("-", "", names(imp))
+names(imp) <- gsub("&", "And", names(imp))
+
+#imp.md <- md.pattern(imp)
+
+# Remove fipcs and name
+imp.im <- subset(imp, select = -c(fips,NAME))
+
+```
+
+
+```{r, warning=FALSE, echo=FALSE}
+
+# Missing Data plot
+aggr(imp, col=c("#453276","#50b773"),
+               numbers=TRUE, sortVars=TRUE,
+               labels=names(imp), cex.axis=.7,
+               gap=3, ylab=c("Missing data","Pattern"))
+
+
+```
+
+<br>
+<br>
+
+Then Using a margin plot to compare the two features with the most missing data. This shows the pattern and distribution of complete and incomplete distributions (blue = observed, green = missing). If data is missing completely at random boxes would be identical. More information can be found [HERE](https://stats.idre.ucla.edu/r/faq/how-do-i-perform-multiple-imputation-using-predictive-mean-matching-in-r/) and [HERE](https://datascienceplus.com/imputing-missing-data-with-r-mice-package/). In all, 14 features had imputed values (Shown Below). 
+
+
+```{r, echo=FALSE}
+
+# Margin plot of child mortality and drug overdose rate, the next highest NA columns
+# shows pattern and distribution of complete na dincomplete distributions (Blue/Red "#453276"=observed, "#50b773"=missing)
+# if these are missing completely at random the "#50b773" and "#453276" boxes would be identical
+# https://stats.idre.ucla.edu/r/faq/how-do-i-perform-multiple-imputation-using-predictive-mean-matching-in-r/
+
+marginplot(imp.im[c(17, 23)], col = c("#453276", "#50b773", "red"))
+
+```
+
+
+```{r, echo=FALSE, include=FALSE}
+
+imputed_Data <- mice(imp.im, m=5, maxit = 50, method = 'pmm', seed = 333)
+
+
+imp.idc <- complete(imputed_Data, "long", inc = TRUE)
+imp.id.complete <- complete(imputed_Data)
+
+#summary(imputed_Data)
+
+#imputed_Data$imp$DrugOverdoseMortalityRate
+
+#blue dots represent the observed data values for DrugOverdoseMortalityRate from the original imp file. The red dots represent the imputed values in each of our five imputed datasets. Blue/Red
+
+#col <- rep(c("#453276", "#50b773")[1 + as.numeric(is.na(imputed_Data$data$DrugOverdoseMortalityRate))], 6)
+#stripplot(DrugOverdoseMortalityRate ~ .imp, data = imp.idc, jit = TRUE, col = col, xlab = "imputation Number")
+```
+   
+### Imputed Features                                                      
+
+```{r}
+
+# Recombining the MICE complete dataset with the original data and column names:
+cpd.mice <- imp.save
+
+cpd.mice$`Life Expectancy` <- imp.id.complete$LifeExpectancy    
+cpd.mice$`Child Mortality Rate` <- imp.id.complete$ChildMortalityRate
+cpd.mice$`% Limited Access to Healthy Foods` <- imp.id.complete$pctLimitedAccesstoHealthyFoods
+cpd.mice$`Drug Overdose Mortality Rate` <- imp.id.complete$DrugOverdoseMortalityRate
+cpd.mice$`Motor Vehicle Mortality Rate` <- imp.id.complete$MotorVehicleMortalityRate
+cpd.mice$`% Uninsured` <- imp.id.complete$pctUninsured
+cpd.mice$`Average Grade Performance` <- imp.id.complete$AverageGradePerformance 
+cpd.mice$`Median Household Income` <- imp.id.complete$MedianHouseholdIncome
+cpd.mice$`% Enrolled in Free or Reduced Lunch` <- imp.id.complete$pctEnrolledinFreeorReducedLunch
+cpd.mice$`Segregation index` <- imp.id.complete$Segregationindex 
+cpd.mice$`% Severe Housing Cost Burden` <- imp.id.complete$pctSevereHousingCostBurden
+cpd.mice$`Donald Trump` <- imp.id.complete$DonaldTrump
+cpd.mice$`Hillary Clinton` <- imp.id.complete$HillaryClinton
+cpd.mice$`% Rural` <- imp.id.complete$pctRural
+
+```
+
+
+## Correlation
+
+Finding correlations using a .75 cutoff to remove highly correlated variables. 
+
+```{r, echo=FALSE, include=FALSE}
+
+# Subset for correlation without fips/NAME
+cpd.mice.c <- subset(cpd.mice, select = -c(fips,NAME))
+
+# Create correlation table
+cor_numVar <- cor(cpd.mice.c)
+
+# find cutoff of .75
+cor.high <- findCorrelation(cor_numVar, cutoff = .75)
+
+# Subset correlated features
+filter.hi <- cor_numVar[,cor.high]
+
+# Remove highly correlated features from the cpd.mice dataset. 
+cpd.mice.cor <- cpd.mice.c[,-c(cor.high)]
+
+# the fips and county name back to the dataset now that correlated features have been removed and rearrange the columns
+cpd.mice.cor$fips <- cpd.mice$fips
+cpd.mice.cor$NAME <- cpd.mice$NAME
+cpd.mice.cor <- cpd.mice.cor %>%  select(fips,NAME, everything())
+
+#corrplot(cor_numVar, method = "square", hclust.method = "ward", order = "FPC", type = "full", tl.col="black", tl.pos = "lt")
+
+# https://cran.r-project.org/web/packages/corrplot/vignettes/corrplot-intro.html 
+# https://stackoverflow.com/questions/55111088/viridis-with-colorramppalette-output-different-vector-lengths-in-r
+
+# Set color palette for Correlogram
+corcol1 <- colorRampPalette(viridis(10, option = "A"))
+
+
+```
+
+
+```{r, echo=FALSE, fig.width=14, fig.height=12}
+
+corrplot.mixed(cor_numVar, 
+               tl.col="black",
+               tl.pos = "lt", 
+               tl.cex=0.8, 
+               tl.srt=60, 
+               upper.col = corcol1(100),
+               lower.col = corcol1(100),
+               number.cex=0.6)
+
+
+
+```
+
+<br>
+<br>
+
+## Feature Selection: Growth {.tabset .tabset-fade}      
+
+### Split-Violin Features
+
+Review of features plotted against boolean label of counties in the top quartile of case growth per capita over the past month. I'll focus on this label for now, but I plan on working on multilabel classifications and incorporating the other labels created. Below, each feature shown against the top quartile per capita case growth (1=yes, 0=no)
+
+
+```{r, echo=FALSE, include=FALSE}
+
+# Mice dataframe with cor removed, ready for feature selection
+# cpd.mice.cor
+# View(cpd.mice.cor)
+#scale_fill_manual(values=c("#453276", "#50b773")) +
+
+tmg <- cpd.mice.cor %>% left_join(labels[,c("fips","topmonthgrowth")], by=c("fips"))
+tmg$topmonthgrowth[is.na(tmg$topmonthgrowth)] <- 0
+
+
+
+tmg.label <- tmg %>% 
+        select(-c(fips,NAME)) %>%
+        gather(-topmonthgrowth, key = "var", value = "value") %>% 
+                      ggplot(aes(x=as.factor(topmonthgrowth), y=value, fill = as.factor(topmonthgrowth) )) +
+                      geom_split_violin() +
+                      geom_boxplot(width=0.3) +
+                      scale_fill_manual(values=c("#61197d", "#fd9f6e")) +
+                      facet_wrap(~var, scales = "free") 
+
+
+
+```
+
+
+```{r, echo=FALSE, fig.width=14, fig.height=14}
+
+plot(tmg.label)
+
+```
+
+### Preprocessing 
+
+Using the caret package to evaluate for near zero variance features, the "transpublic" feature from census data for percent of people using public transportation is found to have few unique values relative to the number of samples and is removed. Data is then centered and scaled for increased regression performance, mostly important for distance / margin based models. "Center" subtracts the mean of the predictor's data from the predictor values while "scale" divides by the standard deviation. 
+
+```{r, echo=FALSE, include=FALSE}
+
+# reorganizing the columns
+tmg <- tmg %>%  select(fips,NAME, topmonthgrowth, everything())
+
+# Removing near zero variance features
+set.seed(333)
+nzv <- nearZeroVar(tmg, saveMetrics = FALSE)
+tmg.nzv <- tmg[,-nzv]
+
+# preprocessing with center and scale
+set.seed(333)
+tmg.preprocess <- preProcess(subset(tmg.nzv, select=-c(fips,NAME,topmonthgrowth)), method = c("center","scale"))
+tmg.pp <- predict(tmg.preprocess,subset(tmg.nzv, select=-c(fips,NAME,topmonthgrowth)))
+
+# adding back fips/name/label column
+tmg.pp <- base::cbind(subset(tmg.nzv, select=c(fips,NAME,topmonthgrowth)), tmg.pp)
+
+# randomly sampling for 70/30 taining/testing subsets
+set.seed(333)
+smp_size <- floor(0.70 * nrow(tmg.pp))
+train_ind <- sample(seq_len(nrow(tmg.pp)), size = smp_size)
+train <- tmg.pp[train_ind,]
+test <- tmg.pp[-train_ind,]
+
+# Create control and metric, using accuracy for our factor label
+control <- trainControl(method ="cv", number = 10)
+metric <- "Accuracy"
+
+
+```
+
+
+
+### Modeling
+
+While my intention was to do a simple regression I decided to test a small selection of models including Generalized Linear Model (GLM), Linear Discriminant Analysis (LDA), Support Vector Machines (SVM), and K-Nearest Neighbors (KNN). No surprise, taking into account the confidence interval SVM performed the best (by accuracy). However, I'm really just looking for feature importance at this time, and not to build a predictive model.
+
+
+```{r, echo=FALSE, include=FALSE}
+
+set.seed(333)
+fit.glm <- train(as.factor(topmonthgrowth)~., 
+                 data = subset(train, select=-c(fips,NAME)), 
+                 method="glm", 
+                 metric=metric, 
+                 trControl=control)
+
+set.seed(333)
+fit.lda <- train(as.factor(topmonthgrowth)~., 
+                 data = subset(train, select=-c(fips,NAME)), 
+                 method="lda", 
+                 metric=metric, 
+                 trControl=control)
+
+set.seed(333)
+fit.svm <- train(as.factor(topmonthgrowth)~., 
+                 data = subset(train, select=-c(fips,NAME)), 
+                 method="svmRadial", 
+                 metric=metric, 
+                 trControl=control)
+
+set.seed(333)
+fit.knn <- train(as.factor(topmonthgrowth)~., 
+                 data = subset(train, select=-c(fips,NAME)), 
+                 method="knn", 
+                 metric=metric, 
+                 trControl=control)
+
+
+results <- resamples(list(lda=fit.lda,knn=fit.knn, svm=fit.svm,glm=fit.glm))
+#summary(results)
+
+# dot plot comparison of accuracy from all models
+scales <- list(x=list(relation="free"), y=list(relation="free"))
+#dotplot(results, scales=scales)
+
+
+importance.svm <- varImp(fit.svm, scale = FALSE)
+#plot(importance.svm)
+
+
+
+
+
+```
+
+
+```{r, echo=FALSE, fig.width=10, fig.height=10}
+
+dotplot(results, scales=scales)
+
+plot(importance.svm, main="SVM Feature Importance: Growth")
+
+
+
+```
+
+<br>
+<br>
+
+### Outcome 
+
+A plot of the top 10 SVM important features, X axis is the confirmed case count per capita, Y is the variable axis. Colors indicate a top growth county (1=yes, 0=no). Most features relate to proxies of poverty or population. 
+<br>
+Additional discussion and review forthcoming. 
+
+```{r, warning=FALSE, include=FALSE, echo=FALSE, fig.width=14, fig.height=14}
+
+
+tmg.cpc.c <- tmg %>% left_join(tcurrent[,c("fips","Confirmed_Per_Capita", "currentcases")], by=c("fips"))
+
+
+# Select the top 10 important features from the SVM feature importance list
+svm.top <- tibble::rownames_to_column(importance.svm$importance, "Feature") %>% arrange(desc(Overall)) %>% top_n(10)
+
+svm.top.ten <- subset(tmg.cpc.c, select = c("topmonthgrowth","Confirmed_Per_Capita", svm.top$Feature))
+  
+#  geom_smooth(method=lm , color="#fdd296", fill="#b63777", formula=y~x, se=TRUE) +
+
+svm.top.plot <- svm.top.ten %>% 
+        gather(-topmonthgrowth, -Confirmed_Per_Capita, key = "var", value = "value") %>% 
+                      ggplot(aes(x=value, y=Confirmed_Per_Capita, color = as.factor(topmonthgrowth) )) +
+                      geom_point(size=.7) +
+                      scale_color_manual(labels = c("Other", "Top 25%"), values=c("#61197d", "#fd9f6e")) +
+                      scale_y_continuous(labels = scales::comma) +
+                      geom_rug(color="#61197d",alpha=.2) +
+                      facet_wrap(~var, scales = "free") + 
+                  labs(title="Top 10 SVM Features: Growth",
+                       subtitle = "Top Quartile CPC Growth in past 30 Days",
+                       color="Growth") +
+                  xlab("Variable") +  
+                  ylab("Cases per capita")
+
+
+```
+                      
+```{r, warning=FALSE, echo=FALSE, fig.width=14, fig.height=14}
+
+plot(svm.top.plot)
+
+```
+
+
+```{r, echo=FALSE, include=FALSE}
+
+grw.svm.top <- svm.top.ten %>% 
+        select(-c(Confirmed_Per_Capita)) %>%
+        gather(-topmonthgrowth, key = "var", value = "value") %>% 
+                      ggplot(aes(x=as.factor(topmonthgrowth), y=value, fill = as.factor(topmonthgrowth) )) +
+                      geom_split_violin() +
+                      geom_boxplot(width=0.3) +
+                      scale_fill_manual(labels = c("Other", "Top 25%"), values=c("#61197d", "#fd9f6e")) +
+                      facet_wrap(~var, scales = "free") +
+                    labs(title="Top 10 SVM Features: Growth",
+                       subtitle = "Top Quartile Per Capita Growth Past Month",
+                       fill="Growth") +
+                  xlab("Month Growth") +  
+                  ylab("Variable")
+
+
+
+
+
+```
+
+### Top 10 Growth Features
+
+The split violin makes the differences between counties with top case growth over the past month compared to those without become more clear. 
+                      
+```{r, warning=FALSE, echo=FALSE, fig.width=14, fig.height=14}
+
+plot(grw.svm.top)
+
+```
+
+
+<br>
+<br>
+<br>
+<br>
+
+## Feature Selection: Mortality {.tabset .tabset-fade}      
+
+### Split-Violin Features
+
+Review of features plotted against boolean label of counties in the top quartile of total deaths per capita. Below, each feature shown against the top quartile (1=yes, 0=no)
+
+
+```{r, echo=FALSE, include=FALSE}
+
+
+# Top quartile deaths per capita (topdeathcpc$topdeathcpc)
+#labels <- labels %>% left_join(topdeathcpc[,c("fips","topdeathcpc")], by=c("fips"))
+
+tdpc <- cpd.mice.cor %>% left_join(labels[,c("fips","topdeathcpc")], by=c("fips"))
+tdpc$topdeathcpc[is.na(tdpc$topdeathcpc)] <- 0
+
+
+tdpc.label <- tdpc %>% 
+        select(-c(fips,NAME)) %>%
+        gather(-topdeathcpc, key = "var", value = "value") %>% 
+                      ggplot(aes(x=as.factor(topdeathcpc), y=value, fill = as.factor(topdeathcpc) )) +
+                      geom_split_violin() +
+                      geom_boxplot(width=0.3) +
+                      scale_fill_manual(labels = c("Other", "Top 25%"), values=c("#61197d", "#fd9f6e")) +
+                      facet_wrap(~var, scales = "free") 
+
+
+
+```
+
+
+```{r, echo=FALSE, fig.width=14, fig.height=14}
+
+plot(tdpc.label)
+
+```
+
+
+### Preprocessing 
+
+Using the preprocessed features from the monthly growth analysis.
+
+```{r, echo=FALSE, include=FALSE}
+
+# adding back fips/name/label column
+tdpc.pp <- tmg.pp
+tdpc.pp$topmonthgrowth <- NULL
+tdpc.pp$topdeathcpc <- tdpc$topdeathcpc
+
+
+# randomly sampling for 70/30 taining/testing subsets, reusing and overwriting same dataframes with new values
+set.seed(333)
+smp_size <- floor(0.70 * nrow(tdpc.pp))
+train_ind <- sample(seq_len(nrow(tdpc.pp)), size = smp_size)
+train <- tdpc.pp[train_ind,]
+test <- tdpc.pp[-train_ind,]
+
+# Control and accuracy metric created previously.
+set.seed(333)
+fit.svm.tdpc <- train(as.factor(topdeathcpc)~., 
+                 data = subset(train, select=-c(fips,NAME)), 
+                 method="svmRadial", 
+                 metric=metric, 
+                 trControl=control)
+
+
+importance.svm.tdpc <- varImp(fit.svm.tdpc, scale = FALSE)
+#plot(importance.svm)
+
+
+
+
+
+```
+
+
+```{r, echo=FALSE, fig.width=10, fig.height=10}
+
+plot(importance.svm.tdpc, main="SVM Feature Importance: Mortality")
+
+
+
+```
+
+<br>
+<br>
+
+### Outcome
+
+```{r, warning=FALSE, include=FALSE, echo=FALSE, fig.width=14, fig.height=14}
+
+#importance.svm.tdpc
+#us.recent.pop$Deaths_Per_Capita
+
+tdpc.cpc.c <- tdpc %>% left_join(us.recent.pop[,c("fips","Deaths_Per_Capita", "deaths")], by=c("fips"))
+
+
+# Select the top 10 important features from the SVM feature importance list
+svm.tdpc.top <- tibble::rownames_to_column(importance.svm.tdpc$importance, "Feature") %>% 
+                                          arrange(desc(Overall)) %>% 
+                                          top_n(10)
+
+svm.tdpc.top.ten <- subset(tdpc.cpc.c, select = c("topdeathcpc","Deaths_Per_Capita", svm.tdpc.top$Feature))
+  
+#  geom_smooth(method=lm , color="#fdd296", fill="#b63777", formula=y~x, se=TRUE) +
+
+svm.tdpc.top.plot <- svm.tdpc.top.ten %>% 
+        gather(-topdeathcpc, -Deaths_Per_Capita, key = "var", value = "value") %>% 
+                      ggplot(aes(x=value, y=Deaths_Per_Capita, color = as.factor(topdeathcpc) )) +
+                      geom_point(size=.7) +
+                      scale_color_manual(labels = c("Other", "Top 25%"), values=c("#61197d", "#fd9f6e")) +
+                      scale_y_continuous(labels = scales::comma) +
+                      geom_rug(color="#61197d",alpha=.2) +
+                      facet_wrap(~var, scales = "free") + 
+                  labs(title="Top 10 SVM Features: Mortality",
+                       subtitle = "Top Quartile Per Capita Mortality",
+                       color="Mortality") +
+                  xlab("Variable") +  
+                  ylab("Deaths Per Capita")
+
+
+```
+                      
+```{r, warning=FALSE, echo=FALSE, fig.width=14, fig.height=14}
+
+plot(svm.tdpc.top.plot)
+
+```
+
+
+```{r, echo=FALSE, include=FALSE}
+
+
+tdpc.svm.top <- svm.tdpc.top.ten %>% 
+        select(-c(Deaths_Per_Capita)) %>%
+        gather(-topdeathcpc, key = "var", value = "value") %>% 
+                      ggplot(aes(x=as.factor(topdeathcpc), y=value, fill = as.factor(topdeathcpc) )) +
+                      geom_split_violin() +
+                      geom_boxplot(width=0.3) +
+                      scale_fill_manual(labels = c("Other", "Top 25%"), values=c("#61197d", "#fd9f6e")) +
+                      facet_wrap(~var, scales = "free") +
+                    labs(title="Top 10 SVM Features: Mortality",
+                       subtitle = "Top Quartile Per Capita Mortality",
+                       fill="Mortality") +
+                  xlab("Deaths Per Capita") +  
+                  ylab("Variable")
+
+
+
+
+
+```
+
+### Top 10 Mortality Features
+                      
+```{r, warning=FALSE, echo=FALSE, fig.width=14, fig.height=14}
+
+plot(tdpc.svm.top)
+
+```
+
+
+```{r, echo=FALSE, include=FALSE}
+
+#View(svm.top)
+#View(svm.tdpc.top)
+
+final.features <- svm.top %>% rename(`Top Growth Features` = Feature)
+final.features$Overall <- NULL
+final.features$`Top Mortality Features` <- svm.tdpc.top$Feature
+
+
+ff.tbl <- final.features %>% formattable(align =c("l","l"),
+                list(State = formatter("span", style = ~ formattable::style(color = "grey",font.weight = "bold"))))
+
+
+```
+
+
+<br>
+<br>
+<br>
+<br>
+
+## Discussion
+
+```{r, echo=FALSE}
+
+formattable(ff.tbl)
+
+```
+
+<br>
+Within the top growth features several proxy indications of poverty are present. While these exact features will likely change as the pandemic progresses, they paint a clear and often repeating picture of American Society: That the most vulnerable among us pay the heaviest price during times of hardship. Those with less education, higher poverty, living in areas of greater population density have shown increased rates of COVID-19 transmission. 
+<br>
+Similarly, when looking at mortality we see various indications of poverty and population density. What will be interesting is as mortality (unfortunately) increases, if we begin to see the addition of specific comorbidities (such as diabetes). 
+ 
+<br>
+<br>
+<br>
+<br>
