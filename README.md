@@ -5,8 +5,8 @@ I've posted here a United States county level analysis of COVID-19 growth trends
 
 <br>
 
-# [US County Level Analysis](https://www.kaggle.com/mcnamamj/us-county-spread-sir-mice-svm/input)
+## [US County Level Analysis](https://www.kaggle.com/mcnamamj/us-county-spread-sir-mice-svm/input)
 
 <br>
 
-# [US and Global Analysis](https://www.kaggle.com/mcnamamj/covid-19-graphing-and-mapping)
+## [US and Global Analysis](https://www.kaggle.com/mcnamamj/covid-19-graphing-and-mapping)
