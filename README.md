@@ -13,4 +13,4 @@ Here I've posted the United States county level analysis of COVID-19 growth tren
 <br>
 
 ### [US and Global Analysis](https://www.kaggle.com/mcnamamj/covid-19-graphing-and-mapping)
-Global Analysis data and script found on kaggle only.
+*Global Analysis data and script found on kaggle only.*
