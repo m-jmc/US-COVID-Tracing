@@ -1,6 +1,6 @@
 ## US COVID-19 Tracing
 
-Beginning in late February early March I began working on two separate COVID-19 projects:
+Beginning in late February early March I began working on two separate COVID-19 projects, I've recently included a dashboard level summary of the visualizations:
 <br>
 
 ### [COVID Dashboard](https://m-jmc.github.io)
@@ -17,4 +17,4 @@ County level analysis and trending using publicly available census and county he
 Initial global exploration of the COVID outbreak and spread. Best viewed on kaggle. *Global Analysis data and script found on kaggle only.*
 
 <br>
-*These scripts depend on current data for each run. Updated data may be obtained [HERE](https://www.kaggle.com/fireballbyedimyrnmom/us-counties-covid-19-dataset) curtesy of the New York Times.*
+*These scripts depend on current data for each run. Updated data may be obtained* [HERE](https://www.kaggle.com/fireballbyedimyrnmom/us-counties-covid-19-dataset) *curtesy of the New York Times.*
