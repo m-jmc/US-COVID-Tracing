@@ -7,13 +7,14 @@ Here I've posted the United States county level analysis of COVID-19 growth tren
 <br>
 
 ### [COVID Dashboard](https://m-jmc.github.io)
-
+A dashboard summary of some of the visualizations included below.
 
 <br>
 
 ### [US County Level Analysis](https://www.kaggle.com/mcnamamj/us-county-spread-sir-mice-svm)
+County level analysis and trending using publicly available census and county health profile data.
 
 <br>
 
 ### [US and Global Analysis](https://www.kaggle.com/mcnamamj/covid-19-graphing-and-mapping)
-*Global Analysis data and script found on kaggle only.*
+Initial global exploration of the COVID outbreak and spread. *Global Analysis data and script found on kaggle only.*
