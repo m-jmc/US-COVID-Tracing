@@ -4,7 +4,7 @@ Beginning in late February early March I began working on two separate COVID-19 
 <br>
 
 ## [COVID Dashboard](https://m-jmc.github.io)
-*A dashboard summary of the US COVID response, including nation, state, and county level rates.*
+*A dashboard summary of the US COVID response, including national, state, and county level rates.*
 
 <br>
 
