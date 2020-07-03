@@ -7,7 +7,7 @@ Here I've posted the United States county level analysis of COVID-19 growth tren
 <br>
 
 ### [COVID Dashboard](https://m-jmc.github.io)
-A dashboard summary of some of the visualizations included below.
+A dashboard summary of the US COVID response, including nation, state, and county level rates.
 
 <br>
 
