@@ -17,4 +17,4 @@ County level analysis and trending using publicly available census and county he
 Initial global exploration of the COVID outbreak and spread. Best viewed on kaggle. *Global Analysis data and script found on kaggle only.*
 
 <br>
-*These scripts depend on current data for each run. Updated data may be obtained* [HERE](https://www.kaggle.com/fireballbyedimyrnmom/us-counties-covid-19-dataset) *curtesy of the New York Times.*
+These scripts depend on current data for each run, updated data may be obtained [HERE](https://www.kaggle.com/fireballbyedimyrnmom/us-counties-covid-19-dataset) curtesy of the New York Times.
